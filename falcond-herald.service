@@ -1,0 +1,18 @@
+[Unit]
+Description=Falcond Herald - Power Profile Notification Daemon
+Documentation=https://github.com/yourusername/falcond-herald
+After=graphical-session.target
+Wants=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/falcond-herald
+Restart=on-failure
+RestartSec=5
+
+# Environment for notifications
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=default.target
