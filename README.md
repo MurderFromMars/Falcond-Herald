@@ -74,7 +74,7 @@ sudo systemctl enable --now tuned-ppd
 
 **One-liner:**
 ```sh
-git clone https://github.com/MurderFromMars/Falcond-Herald.git /tmp/falcond-herald && sh /tmp/falcond-herald/install.sh
+rm -rf /tmp/falcond-herald && git clone https://github.com/MurderFromMars/Falcond-Herald.git /tmp/falcond-herald && sh /tmp/falcond-herald/install.sh && rm -rf /tmp/falcond-herald
 ```
 
 **Manual:**
