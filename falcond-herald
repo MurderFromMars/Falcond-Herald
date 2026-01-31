@@ -3,12 +3,7 @@
 Falcond Herald - Power Profile Notification Daemon
 A companion service that announces Falcond's power profile changes.
 
-UPDATED FEATURES:
-  - "Cooler" Cyber/Sci-fi style messages.
-  - Title changed to "Falcond".
-  - Critical urgency (pops over games).
-  - Extended auto-close timer (6 seconds).
-"""
+
 
 import os
 import sys
@@ -31,17 +26,17 @@ except ImportError as e:
 PROFILES = {
     "performance": {
         "title": "Falcond",
-        "message": "LIMITERS DISENGAGED. Maximum Output.",
+        "message": "Performance optimizations active",
         "icon": "weather-storm-symbolic"  # Lightning bolt (fallback: input-gaming-symbolic)
     },
     "balanced": {
         "title": "Falcond",
-        "message": "Systems Stabilized. Standard Operations.",
+        "message": "Standard performance restored",
         "icon": "emblem-default-symbolic" # Checkmark/Standard (fallback: user-available-symbolic)
     },
     "power-saver": {
         "title": "Falcond",
-        "message": "PROTOCOL: ENDURANCE. Energy Preserved.",
+        "message": "Low power mode active.",
         "icon": "night-light-symbolic"    # Moon/Night (fallback: battery-low-symbolic)
     }
 }
