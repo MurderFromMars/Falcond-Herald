@@ -1,66 +1,52 @@
 #!/usr/bin/env python3
 """
 Falcond Herald - Power Profile Notification Daemon
-A companion service that announces Falcond's power profile changes
-via desktop notifications.
+A companion service that announces Falcond's power profile changes.
 
-Supports:
-  - power-profiles-daemon (standard)
-  - tuned-ppd (Fedora/RHEL compatibility layer)
-  - Any D-Bus service implementing net.hadess.PowerProfiles
-
-Works with any DE/WM that has a notification daemon:
-  - KDE Plasma, GNOME, XFCE, Cinnamon, MATE, LXQt
-  - Hyprland, Sway, i3, bspwm (with dunst, mako, swaync, etc.)
+UPDATED FEATURES:
+  - "Cooler" Cyber/Sci-fi style messages.
+  - Title changed to "Falcond".
+  - Critical urgency (pops over games).
+  - Extended auto-close timer (6 seconds).
 """
 
 import os
 import sys
 import signal
 import subprocess
-import shutil
 from pathlib import Path
 
 try:
     import dbus
     from dbus.mainloop.glib import DBusGMainLoop
-    from gi.repository import GLib
+    # Import Notify for advanced notification control
+    from gi.repository import GLib, Notify
 except ImportError as e:
     print(f"Error: Missing dependency - {e}")
-    print("Please install: python3-dbus python3-gi")
+    print("Please install: python3-dbus python3-gi libnotify")
     sys.exit(1)
 
 
 # Notification Configuration
 PROFILES = {
     "performance": {
-        "title": "⚡ Falcond Herald",
-        "message": "Performance Optimization Activated",
-        "icon": "power-profile-performance-symbolic",
-        "urgency": "normal"
+        "title": "Falcond",
+        "message": "LIMITERS DISENGAGED. Maximum Output.",
+        "icon": "weather-storm-symbolic"  # Lightning bolt (fallback: input-gaming-symbolic)
     },
     "balanced": {
-        "title": "🔋 Falcond Herald",
-        "message": "Resuming standard desktop power profile",
-        "icon": "power-profile-balanced-symbolic",
-        "urgency": "low"
+        "title": "Falcond",
+        "message": "Systems Stabilized. Standard Operations.",
+        "icon": "emblem-default-symbolic" # Checkmark/Standard (fallback: user-available-symbolic)
     },
     "power-saver": {
-        "title": "🍃 Falcond Herald",
-        "message": "Power conservation mode engaged",
-        "icon": "power-profile-power-saver-symbolic",
-        "urgency": "low"
+        "title": "Falcond",
+        "message": "PROTOCOL: ENDURANCE. Energy Preserved.",
+        "icon": "night-light-symbolic"    # Moon/Night (fallback: battery-low-symbolic)
     }
 }
 
-# Fallback icons (more universally available)
-FALLBACK_ICONS = {
-    "performance": "battery-full-charged",
-    "balanced": "battery-good",
-    "power-saver": "battery-low"
-}
-
-# D-Bus constants - same interface for power-profiles-daemon AND tuned-ppd
+# D-Bus constants
 PPD_BUS_NAME = "net.hadess.PowerProfiles"
 PPD_OBJECT_PATH = "/net/hadess/PowerProfiles"
 PPD_INTERFACE = "net.hadess.PowerProfiles"
@@ -74,59 +60,70 @@ class FalcondHerald:
         self.current_profile = None
         self.first_run = True
         
+        # 1. SETUP ENVIRONMENT
+        self._setup_environment()
+
+        # 2. INIT NOTIFICATION SYSTEM
+        try:
+            if not Notify.init("Falcond"):
+                print("Warning: Failed to initialize libnotify")
+        except Exception as e:
+            print(f"Warning: Notify init error: {e}")
+            
+    def _setup_environment(self):
+        """Ensure the process has the environment variables needed to talk to the display."""
+        if "DISPLAY" not in os.environ and "WAYLAND_DISPLAY" not in os.environ:
+            os.environ["DISPLAY"] = ":0"
+            
+        if "XDG_RUNTIME_DIR" not in os.environ:
+            uid = os.getuid()
+            runtime_dir = f"/run/user/{uid}"
+            if os.path.exists(runtime_dir):
+                os.environ["XDG_RUNTIME_DIR"] = runtime_dir
+
     def send_notification(self, profile: str) -> None:
-        """Send a desktop notification for the given power profile."""
+        """
+        Send a Critical notification that auto-closes.
+        """
         config = PROFILES.get(profile, {
-            "title": "🔌 Falcond Herald",
-            "message": f"Power profile changed to: {profile}",
-            "icon": "battery",
-            "urgency": "normal"
+            "title": "Falcond",
+            "message": f"Profile Active: {profile}",
+            "icon": "emblem-system-symbolic"
         })
         
-        # Try symbolic icon first, fall back to standard icon
-        icon = config["icon"]
-        fallback_icon = FALLBACK_ICONS.get(profile, "battery")
-        
-        # Build notification command
-        cmd = [
-            "notify-send",
-            "--app-name=Falcond Herald",
-            f"--urgency={config['urgency']}",
-            f"--icon={icon}",
-            config["title"],
-            config["message"]
-        ]
-        
         try:
-            # Set up environment for user session notifications
-            env = os.environ.copy()
+            # Create the notification object
+            n = Notify.Notification.new(
+                config["title"],
+                config["message"],
+                config["icon"]
+            )
             
-            # Ensure we can reach the notification daemon
-            # Works for both X11 and Wayland sessions
-            if "DISPLAY" not in env and "WAYLAND_DISPLAY" not in env:
-                # Try common defaults
-                env["DISPLAY"] = ":0"
+            # SET URGENCY TO CRITICAL (2)
+            # This forces the notification to appear even in fullscreen games
+            n.set_urgency(Notify.Urgency.CRITICAL)
             
-            # For Wayland compositors, ensure XDG_RUNTIME_DIR is set
-            if "XDG_RUNTIME_DIR" not in env:
-                uid = os.getuid()
-                runtime_dir = f"/run/user/{uid}"
-                if os.path.exists(runtime_dir):
-                    env["XDG_RUNTIME_DIR"] = runtime_dir
+            # Show the notification
+            n.show()
             
-            result = subprocess.run(cmd, env=env, capture_output=True, timeout=5)
+            # FORCE CLOSE AFTER 6 SECONDS (6000ms)
+            # Increased from 4s to 6s as requested
+            GLib.timeout_add(6000, n.close)
             
-            # If symbolic icon failed, retry with fallback
-            if result.returncode != 0 and icon != fallback_icon:
-                cmd[4] = f"--icon={fallback_icon}"
-                subprocess.run(cmd, env=env, capture_output=True, timeout=5)
-                
-        except subprocess.TimeoutExpired:
-            print(f"Warning: Notification timed out for profile: {profile}")
-        except FileNotFoundError:
-            print("Warning: notify-send not found. Install libnotify.")
         except Exception as e:
-            print(f"Warning: Failed to send notification: {e}")
+            print(f"Failed to show notification: {e}")
+            # Fallback: Try simple notify-send if the Python method fails
+            try:
+                subprocess.run([
+                    "notify-send", 
+                    "--urgency=critical",
+                    "--expire-time=6000",
+                    f"--icon={config['icon']}",
+                    config["title"], 
+                    config["message"]
+                ])
+            except:
+                pass
     
     def on_properties_changed(self, interface: str, changed: dict, invalidated: list) -> None:
         """Handle D-Bus property changes."""
@@ -161,31 +158,19 @@ class FalcondHerald:
     def detect_backend(self) -> str:
         """Detect which power profile backend is running."""
         try:
-            # Check for tuned-ppd first (it's a shim over tuned)
-            result = subprocess.run(
-                ["systemctl", "is-active", "tuned-ppd"],
-                capture_output=True, timeout=5
-            )
-            if result.returncode == 0:
-                return "tuned-ppd"
-        except:
-            pass
+            res = subprocess.run(["systemctl", "is-active", "tuned-ppd"], capture_output=True)
+            if res.returncode == 0: return "tuned-ppd"
+        except: pass
         
         try:
-            # Check for power-profiles-daemon
-            result = subprocess.run(
-                ["systemctl", "is-active", "power-profiles-daemon"],
-                capture_output=True, timeout=5
-            )
-            if result.returncode == 0:
-                return "power-profiles-daemon"
-        except:
-            pass
+            res = subprocess.run(["systemctl", "is-active", "power-profiles-daemon"], capture_output=True)
+            if res.returncode == 0: return "power-profiles-daemon"
+        except: pass
         
         return "unknown"
     
     def check_ppd_available(self) -> bool:
-        """Check if power-profiles-daemon is available."""
+        """Check if power-profiles-daemon is available on D-Bus."""
         try:
             proxy = self.bus.get_object(PPD_BUS_NAME, PPD_OBJECT_PATH)
             props = dbus.Interface(proxy, DBUS_PROPERTIES_INTERFACE)
@@ -197,19 +182,20 @@ class FalcondHerald:
     def setup_signal_handlers(self) -> None:
         """Set up signal handlers for graceful shutdown."""
         def handle_signal(signum, frame):
-            print(f"\nReceived signal {signum}, Herald retiring...")
+            print(f"\nReceived signal {signum}, shutting down...")
             if self.loop:
                 self.loop.quit()
+            try: Notify.uninit() 
+            except: pass
         
         signal.signal(signal.SIGINT, handle_signal)
         signal.signal(signal.SIGTERM, handle_signal)
     
     def run(self) -> int:
         """Main daemon loop."""
-        print("Falcond Herald - Power Profile Announcer")
-        print("========================================")
+        print("Falcond Herald - Active")
+        print("=======================")
         
-        # Initialize D-Bus with GLib main loop
         DBusGMainLoop(set_as_default=True)
         
         try:
@@ -218,32 +204,13 @@ class FalcondHerald:
             print(f"Error: Cannot connect to system D-Bus: {e}")
             return 1
         
-        # Check if power-profiles-daemon (or tuned-ppd) is available
         if not self.check_ppd_available():
-            print("Error: No power profile daemon available.")
-            print("")
-            print("Install ONE of the following:")
-            print("")
-            print("  power-profiles-daemon (recommended):")
-            print("    Arch:          sudo pacman -S power-profiles-daemon")
-            print("    Debian/Ubuntu: sudo apt install power-profiles-daemon")
-            print("    Fedora:        sudo dnf install power-profiles-daemon")
-            print("")
-            print("  tuned-ppd (Fedora/RHEL alternative):")
-            print("    Fedora:        sudo dnf install tuned-ppd")
-            print("    RHEL/CentOS:   sudo dnf install tuned-ppd")
-            print("")
-            print("Then enable: sudo systemctl enable --now <service-name>")
+            print("Error: No power profile daemon available on D-Bus.")
             return 1
         
-        # Get initial profile
         self.current_profile = self.get_current_profile()
-        backend = self.detect_backend()
-        print(f"Backend: {backend}")
-        print(f"Current power profile: {self.current_profile}")
-        print("Awaiting Falcond's commands...")
+        print(f"Current profile: {self.current_profile}")
         
-        # Subscribe to property changes
         self.bus.add_signal_receiver(
             self.on_properties_changed,
             signal_name="PropertiesChanged",
@@ -252,24 +219,19 @@ class FalcondHerald:
             path=PPD_OBJECT_PATH
         )
         
-        # Set up signal handlers
         self.setup_signal_handlers()
         
-        # Run main loop
         self.loop = GLib.MainLoop()
         try:
             self.loop.run()
         except KeyboardInterrupt:
             pass
         
-        print("Falcond Herald stopped.")
         return 0
-
 
 def main():
     daemon = FalcondHerald()
     sys.exit(daemon.run())
-
 
 if __name__ == "__main__":
     main()
