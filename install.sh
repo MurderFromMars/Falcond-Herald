@@ -1,12 +1,11 @@
 #!/bin/bash
 #
-# Falcond Herald Installer
-# Installs the power profile notification daemon
+# Falcond Herald Self-Contained Installer
+# This script embeds all necessary files and can be run via curl | bash
 #
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$HOME/.local/bin"
 SERVICE_DIR="$HOME/.config/systemd/user"
 
@@ -101,14 +100,267 @@ print_status "Creating directories..."
 mkdir -p "$BIN_DIR"
 mkdir -p "$SERVICE_DIR"
 
-# Install the daemon script
+# Create the daemon script
 print_status "Installing falcond-herald to $BIN_DIR..."
-cp "$SCRIPT_DIR/falcond-herald" "$BIN_DIR/falcond-herald"
+cat > "$BIN_DIR/falcond-herald" << 'HERALD_SCRIPT_EOF'
+#!/usr/bin/env python3
+
+####A companion service that announces Falcond's power profile changes.
+
+
+
+
+import os
+import sys
+import signal
+import subprocess
+from pathlib import Path
+
+try:
+    import dbus
+    from dbus.mainloop.glib import DBusGMainLoop
+    # Import Notify for advanced notification control
+    from gi.repository import GLib, Notify
+except ImportError as e:
+    print(f"Error: Missing dependency - {e}")
+    print("Please install: python3-dbus python3-gi libnotify")
+    sys.exit(1)
+
+
+# Notification Configuration
+PROFILES = {
+    "performance": {
+        "title": "Falcond",
+        "message": "Performance Optimizations Active",
+        "icon": "weather-storm-symbolic"  # Lightning bolt (fallback: input-gaming-symbolic)
+    },
+    "balanced": {
+        "title": "Falcond",
+        "message": "Standard Performance Restored",
+        "icon": "emblem-default-symbolic" # Checkmark/Standard (fallback: user-available-symbolic)
+    },
+    "power-saver": {
+        "title": "Falcond",
+        "message": "Low Power Mode Active.",
+        "icon": "night-light-symbolic"    # Moon/Night (fallback: battery-low-symbolic)
+    }
+}
+
+# D-Bus constants
+PPD_BUS_NAME = "net.hadess.PowerProfiles"
+PPD_OBJECT_PATH = "/net/hadess/PowerProfiles"
+PPD_INTERFACE = "net.hadess.PowerProfiles"
+DBUS_PROPERTIES_INTERFACE = "org.freedesktop.DBus.Properties"
+
+
+class FalcondHerald:
+    def __init__(self):
+        self.loop = None
+        self.bus = None
+        self.current_profile = None
+        self.first_run = True
+
+        # 1. SETUP ENVIRONMENT
+        self._setup_environment()
+
+        # 2. INIT NOTIFICATION SYSTEM
+        try:
+            if not Notify.init("Falcond"):
+                print("Warning: Failed to initialize libnotify")
+        except Exception as e:
+            print(f"Warning: Notify init error: {e}")
+
+    def _setup_environment(self):
+        """Ensure the process has the environment variables needed to talk to the display."""
+        if "DISPLAY" not in os.environ and "WAYLAND_DISPLAY" not in os.environ:
+            os.environ["DISPLAY"] = ":0"
+
+        if "XDG_RUNTIME_DIR" not in os.environ:
+            uid = os.getuid()
+            runtime_dir = f"/run/user/{uid}"
+            if os.path.exists(runtime_dir):
+                os.environ["XDG_RUNTIME_DIR"] = runtime_dir
+
+    def send_notification(self, profile: str) -> None:
+        """
+        Send a Critical notification that auto-closes.
+        """
+        config = PROFILES.get(profile, {
+            "title": "Falcond",
+            "message": f"Profile Active: {profile}",
+            "icon": "emblem-system-symbolic"
+        })
+
+        try:
+            # Create the notification object
+            n = Notify.Notification.new(
+                config["title"],
+                config["message"],
+                config["icon"]
+            )
+
+            # SET URGENCY TO CRITICAL (2)
+            # This forces the notification to appear even in fullscreen games
+            n.set_urgency(Notify.Urgency.CRITICAL)
+
+            # Show the notification
+            n.show()
+
+            # FORCE CLOSE AFTER 6 SECONDS (6000ms)
+            # Increased from 4s to 6s as requested
+            GLib.timeout_add(6000, n.close)
+
+        except Exception as e:
+            print(f"Failed to show notification: {e}")
+            # Fallback: Try simple notify-send if the Python method fails
+            try:
+                subprocess.run([
+                    "notify-send",
+                    "--urgency=critical",
+                    "--expire-time=6000",
+                    f"--icon={config['icon']}",
+                    config["title"],
+                    config["message"]
+                ])
+            except:
+                pass
+
+    def on_properties_changed(self, interface: str, changed: dict, invalidated: list) -> None:
+        """Handle D-Bus property changes."""
+        if interface != PPD_INTERFACE:
+            return
+
+        if "ActiveProfile" in changed:
+            new_profile = str(changed["ActiveProfile"])
+
+            # Skip notification on first detection (startup)
+            if self.first_run:
+                self.first_run = False
+                self.current_profile = new_profile
+                print(f"Herald standing by. Current profile: {new_profile}")
+                return
+
+            if new_profile != self.current_profile:
+                print(f"Announcing: {self.current_profile} -> {new_profile}")
+                self.current_profile = new_profile
+                self.send_notification(new_profile)
+
+    def get_current_profile(self) -> str:
+        """Get the current active power profile."""
+        try:
+            proxy = self.bus.get_object(PPD_BUS_NAME, PPD_OBJECT_PATH)
+            props = dbus.Interface(proxy, DBUS_PROPERTIES_INTERFACE)
+            return str(props.Get(PPD_INTERFACE, "ActiveProfile"))
+        except dbus.DBusException as e:
+            print(f"Error getting current profile: {e}")
+            return "unknown"
+
+    def detect_backend(self) -> str:
+        """Detect which power profile backend is running."""
+        try:
+            res = subprocess.run(["systemctl", "is-active", "tuned-ppd"], capture_output=True)
+            if res.returncode == 0: return "tuned-ppd"
+        except: pass
+
+        try:
+            res = subprocess.run(["systemctl", "is-active", "power-profiles-daemon"], capture_output=True)
+            if res.returncode == 0: return "power-profiles-daemon"
+        except: pass
+
+        return "unknown"
+
+    def check_ppd_available(self) -> bool:
+        """Check if power-profiles-daemon is available on D-Bus."""
+        try:
+            proxy = self.bus.get_object(PPD_BUS_NAME, PPD_OBJECT_PATH)
+            props = dbus.Interface(proxy, DBUS_PROPERTIES_INTERFACE)
+            props.Get(PPD_INTERFACE, "ActiveProfile")
+            return True
+        except dbus.DBusException:
+            return False
+
+    def setup_signal_handlers(self) -> None:
+        """Set up signal handlers for graceful shutdown."""
+        def handle_signal(signum, frame):
+            print(f"\nReceived signal {signum}, shutting down...")
+            if self.loop:
+                self.loop.quit()
+            try: Notify.uninit()
+            except: pass
+
+        signal.signal(signal.SIGINT, handle_signal)
+        signal.signal(signal.SIGTERM, handle_signal)
+
+    def run(self) -> int:
+        """Main daemon loop."""
+        print("Falcond Herald - Active")
+        print("=======================")
+
+        DBusGMainLoop(set_as_default=True)
+
+        try:
+            self.bus = dbus.SystemBus()
+        except dbus.DBusException as e:
+            print(f"Error: Cannot connect to system D-Bus: {e}")
+            return 1
+
+        if not self.check_ppd_available():
+            print("Error: No power profile daemon available on D-Bus.")
+            return 1
+
+        self.current_profile = self.get_current_profile()
+        print(f"Current profile: {self.current_profile}")
+
+        self.bus.add_signal_receiver(
+            self.on_properties_changed,
+            signal_name="PropertiesChanged",
+            dbus_interface=DBUS_PROPERTIES_INTERFACE,
+            bus_name=PPD_BUS_NAME,
+            path=PPD_OBJECT_PATH
+        )
+
+        self.setup_signal_handlers()
+
+        self.loop = GLib.MainLoop()
+        try:
+            self.loop.run()
+        except KeyboardInterrupt:
+            pass
+
+        return 0
+
+def main():
+    daemon = FalcondHerald()
+    sys.exit(daemon.run())
+
+if __name__ == "__main__":
+    main()
+HERALD_SCRIPT_EOF
+
 chmod +x "$BIN_DIR/falcond-herald"
 
-# Install the service file
+# Create the service file
 print_status "Installing systemd user service..."
-cp "$SCRIPT_DIR/falcond-herald.service" "$SERVICE_DIR/falcond-herald.service"
+cat > "$SERVICE_DIR/falcond-herald.service" << 'SERVICE_EOF'
+[Unit]
+Description=Falcond Herald - Power Profile Notification Daemon
+Documentation=https://github.com/MurderFromMars/Falcond-Herald
+After=graphical-session.target
+Wants=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/falcond-herald
+Restart=on-failure
+RestartSec=5
+
+# Environment for notifications
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=default.target
+SERVICE_EOF
 
 # Reload systemd
 print_status "Reloading systemd user daemon..."
