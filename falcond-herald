@@ -10,6 +10,7 @@ import sys
 import signal
 import subprocess
 from pathlib import Path
+from datetime import datetime
 
 try:
     import dbus
@@ -47,6 +48,11 @@ PPD_OBJECT_PATH = "/net/hadess/PowerProfiles"
 PPD_INTERFACE = "net.hadess.PowerProfiles"
 DBUS_PROPERTIES_INTERFACE = "org.freedesktop.DBus.Properties"
 
+# Logging
+LOG_DIR = Path.home() / ".local" / "share" / "falcond-herald"
+LOG_FILE = LOG_DIR / "falcond-herald.log"
+PID_FILE = LOG_DIR / "falcond-herald.pid"
+
 
 class FalcondHerald:
     def __init__(self):
@@ -55,25 +61,31 @@ class FalcondHerald:
         self.current_profile = None
         self.first_run = True
 
-        # 1. SETUP ENVIRONMENT
-        self._setup_environment()
+        # Setup logging directory
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # Write PID file
+        with open(PID_FILE, 'w') as f:
+            f.write(str(os.getpid()))
 
-        # 2. INIT NOTIFICATION SYSTEM
+        # Setup logging
+        self.log_file = open(LOG_FILE, 'a')
+        self.log("Falcond Herald starting...")
+
+        # Init notification system
         try:
             if not Notify.init("Falcond"):
-                print("Warning: Failed to initialize libnotify")
+                self.log("Warning: Failed to initialize libnotify")
         except Exception as e:
-            print(f"Warning: Notify init error: {e}")
+            self.log(f"Warning: Notify init error: {e}")
 
-    def _setup_environment(self):
-        """Ensure the process has the environment variables needed to talk to the display."""
-        # FIXED: Only set XDG_RUNTIME_DIR if missing
-        # Do NOT force DISPLAY=:0 on Wayland systems - this breaks Steam and other apps
-        if "XDG_RUNTIME_DIR" not in os.environ:
-            uid = os.getuid()
-            runtime_dir = f"/run/user/{uid}"
-            if os.path.exists(runtime_dir):
-                os.environ["XDG_RUNTIME_DIR"] = runtime_dir
+    def log(self, message: str):
+        """Write log message with timestamp."""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_line = f"[{timestamp}] {message}\n"
+        self.log_file.write(log_line)
+        self.log_file.flush()
+        print(f"[{timestamp}] {message}")
 
     def send_notification(self, profile: str) -> None:
         """
@@ -101,11 +113,12 @@ class FalcondHerald:
             n.show()
 
             # FORCE CLOSE AFTER 6 SECONDS (6000ms)
-            # Increased from 4s to 6s as requested
             GLib.timeout_add(6000, n.close)
 
+            self.log(f"Notification sent: {config['message']}")
+
         except Exception as e:
-            print(f"Failed to show notification: {e}")
+            self.log(f"Failed to show notification: {e}")
             # Fallback: Try simple notify-send if the Python method fails
             try:
                 subprocess.run([
@@ -131,11 +144,11 @@ class FalcondHerald:
             if self.first_run:
                 self.first_run = False
                 self.current_profile = new_profile
-                print(f"Herald standing by. Current profile: {new_profile}")
+                self.log(f"Herald standing by. Current profile: {new_profile}")
                 return
 
             if new_profile != self.current_profile:
-                print(f"Announcing: {self.current_profile} -> {new_profile}")
+                self.log(f"Profile change: {self.current_profile} -> {new_profile}")
                 self.current_profile = new_profile
                 self.send_notification(new_profile)
 
@@ -146,22 +159,8 @@ class FalcondHerald:
             props = dbus.Interface(proxy, DBUS_PROPERTIES_INTERFACE)
             return str(props.Get(PPD_INTERFACE, "ActiveProfile"))
         except dbus.DBusException as e:
-            print(f"Error getting current profile: {e}")
+            self.log(f"Error getting current profile: {e}")
             return "unknown"
-
-    def detect_backend(self) -> str:
-        """Detect which power profile backend is running."""
-        try:
-            res = subprocess.run(["systemctl", "is-active", "tuned-ppd"], capture_output=True)
-            if res.returncode == 0: return "tuned-ppd"
-        except: pass
-
-        try:
-            res = subprocess.run(["systemctl", "is-active", "power-profiles-daemon"], capture_output=True)
-            if res.returncode == 0: return "power-profiles-daemon"
-        except: pass
-
-        return "unknown"
 
     def check_ppd_available(self) -> bool:
         """Check if power-profiles-daemon is available on D-Bus."""
@@ -176,34 +175,44 @@ class FalcondHerald:
     def setup_signal_handlers(self) -> None:
         """Set up signal handlers for graceful shutdown."""
         def handle_signal(signum, frame):
-            print(f"\nReceived signal {signum}, shutting down...")
+            self.log(f"Received signal {signum}, shutting down...")
             if self.loop:
                 self.loop.quit()
-            try: Notify.uninit()
-            except: pass
+            try: 
+                Notify.uninit()
+            except: 
+                pass
+            try:
+                self.log_file.close()
+            except:
+                pass
+            try:
+                PID_FILE.unlink()
+            except:
+                pass
 
         signal.signal(signal.SIGINT, handle_signal)
         signal.signal(signal.SIGTERM, handle_signal)
 
     def run(self) -> int:
         """Main daemon loop."""
-        print("Falcond Herald - Active")
-        print("=======================")
+        self.log("Falcond Herald - Active")
+        self.log("=======================")
 
         DBusGMainLoop(set_as_default=True)
 
         try:
             self.bus = dbus.SystemBus()
         except dbus.DBusException as e:
-            print(f"Error: Cannot connect to system D-Bus: {e}")
+            self.log(f"Error: Cannot connect to system D-Bus: {e}")
             return 1
 
         if not self.check_ppd_available():
-            print("Error: No power profile daemon available on D-Bus.")
+            self.log("Error: No power profile daemon available on D-Bus.")
             return 1
 
         self.current_profile = self.get_current_profile()
-        print(f"Current profile: {self.current_profile}")
+        self.log(f"Current profile: {self.current_profile}")
 
         self.bus.add_signal_receiver(
             self.on_properties_changed,
