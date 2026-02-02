@@ -49,7 +49,7 @@ cmd_start() {
     fi
 
     print_status "Starting Falcond Herald..."
-    
+
     if [ ! -f "$BIN_FILE" ]; then
         print_error "Falcond Herald not installed at $BIN_FILE"
         return 1
@@ -57,9 +57,9 @@ cmd_start() {
 
     # Start in background, detached from terminal
     nohup "$BIN_FILE" >> "$LOG_FILE" 2>&1 &
-    
+
     sleep 1
-    
+
     if is_running; then
         print_success "Falcond Herald started (PID: $(get_pid))"
     else
@@ -76,9 +76,9 @@ cmd_stop() {
 
     local pid=$(get_pid)
     print_status "Stopping Falcond Herald (PID: $pid)..."
-    
+
     kill "$pid" 2>/dev/null || true
-    
+
     # Wait up to 5 seconds for graceful shutdown
     for i in {1..10}; do
         if ! is_running; then
@@ -88,7 +88,7 @@ cmd_stop() {
         fi
         sleep 0.5
     done
-    
+
     # Force kill if still running
     print_warning "Forcing shutdown..."
     kill -9 "$pid" 2>/dev/null || true
@@ -107,23 +107,23 @@ cmd_status() {
     echo ""
     echo -e "${CYAN}Falcond Herald Status${NC}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    
+
     if is_running; then
         local pid=$(get_pid)
         echo -e "State:     ${GREEN}● running${NC}"
         echo -e "PID:       $pid"
-        
+
         # Get memory usage
         local mem=$(ps -p "$pid" -o rss= 2>/dev/null | awk '{printf "%.1f MB", $1/1024}')
         echo -e "Memory:    $mem"
-        
+
         # Check uptime
         local start_time=$(ps -p "$pid" -o lstart= 2>/dev/null)
         echo -e "Started:   $start_time"
     else
         echo -e "State:     ${RED}○ stopped${NC}"
     fi
-    
+
     echo ""
     echo "Autostart: $([ -f "$AUTOSTART_FILE" ] && echo -e "${GREEN}enabled${NC}" || echo -e "${RED}disabled${NC}")"
     echo "Log file:  $LOG_FILE"
@@ -137,9 +137,9 @@ cmd_enable() {
     fi
 
     print_status "Enabling autostart..."
-    
+
     mkdir -p "$(dirname "$AUTOSTART_FILE")"
-    
+
     cat > "$AUTOSTART_FILE" << 'EOF'
 [Desktop Entry]
 Type=Application
@@ -154,7 +154,7 @@ X-GNOME-Autostart-enabled=true
 StartupNotify=false
 Hidden=false
 EOF
-    
+
     print_success "Autostart enabled - will run on next login"
 }
 
