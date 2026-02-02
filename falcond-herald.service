@@ -11,8 +11,6 @@ ExecStart=%h/.local/bin/falcond-herald
 Restart=on-failure
 RestartSec=5
 
-# Environment for notifications
-Environment=DISPLAY=:0
 
 [Install]
 WantedBy=default.target
