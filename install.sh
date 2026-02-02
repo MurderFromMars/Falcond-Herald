@@ -234,34 +234,49 @@ running() { local p=$(get_pid); [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
 
 start() {
     running && { warn "Already running (PID: $(get_pid))"; return 0; }
-    msg "Starting..."; nohup "$BIN" >> "$LOG" 2>&1 &; sleep 1
+    msg "Starting..."
+    nohup "$BIN" >> "$LOG" 2>&1 &
+    sleep 1
     running && ok "Started (PID: $(get_pid))" || err "Failed"
 }
 
 stop() {
     running || { warn "Not running"; return 0; }
-    local p=$(get_pid); msg "Stopping (PID: $p)..."; kill "$p" 2>/dev/null || true
-    for i in {1..10}; do running || { ok "Stopped"; rm -f "$PID"; return 0; }; sleep 0.5; done
-    kill -9 "$p" 2>/dev/null || true; rm -f "$PID"; ok "Stopped"
+    local p=$(get_pid)
+    msg "Stopping (PID: $p)..."
+    kill "$p" 2>/dev/null || true
+    for i in {1..10}; do
+        running || { ok "Stopped"; rm -f "$PID"; return 0; }
+        sleep 0.5
+    done
+    kill -9 "$p" 2>/dev/null || true
+    rm -f "$PID"
+    ok "Stopped"
 }
 
 status() {
-    echo ""; echo -e "${CYAN}Falcond Herald Status${NC}"; echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo -e "${CYAN}Falcond Herald Status${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     if running; then
-        local p=$(get_pid); echo -e "State:     ${GREEN}● running${NC}"
+        local p=$(get_pid)
+        echo -e "State:     ${GREEN}● running${NC}"
         echo -e "PID:       $p"
         echo -e "Memory:    $(ps -p "$p" -o rss= 2>/dev/null | awk '{printf "%.1f MB", $1/1024}')"
         echo -e "Started:   $(ps -p "$p" -o lstart= 2>/dev/null)"
     else
         echo -e "State:     ${RED}○ stopped${NC}"
     fi
-    echo ""; echo "Autostart: $([ -f "$AUTO" ] && echo -e "${GREEN}enabled${NC}" || echo -e "${RED}disabled${NC}")"
-    echo "Log file:  $LOG"; echo ""
+    echo ""
+    echo "Autostart: $([ -f "$AUTO" ] && echo -e "${GREEN}enabled${NC}" || echo -e "${RED}disabled${NC}")"
+    echo "Log file:  $LOG"
+    echo ""
 }
 
 enable() {
     [ -f "$AUTO" ] && { warn "Already enabled"; return 0; }
-    msg "Enabling..."; mkdir -p "$(dirname "$AUTO")"
+    msg "Enabling..."
+    mkdir -p "$(dirname "$AUTO")"
     cat > "$AUTO" << 'EOF'
 [Desktop Entry]
 Type=Application
@@ -279,7 +294,11 @@ EOF
     ok "Enabled"
 }
 
-disable() { [ ! -f "$AUTO" ] && { warn "Already disabled"; return 0; }; rm -f "$AUTO"; ok "Disabled"; }
+disable() {
+    [ ! -f "$AUTO" ] && { warn "Already disabled"; return 0; }
+    rm -f "$AUTO"
+    ok "Disabled"
+}
 
 logs() {
     [ ! -f "$LOG" ] && { warn "No log file"; return 1; }
@@ -287,22 +306,30 @@ logs() {
 }
 
 help() {
-    echo ""; echo -e "${CYAN}Falcond Herald Management${NC}"
+    echo ""
+    echo -e "${CYAN}Falcond Herald Management${NC}"
     echo "Usage: falcond-ctl <command>"
-    echo ""; echo "Commands:"
+    echo ""
+    echo "Commands:"
     echo "  start      Start daemon"
     echo "  stop       Stop daemon"
     echo "  restart    Restart daemon"
     echo "  status     Show status"
     echo "  enable     Enable autostart"
     echo "  disable    Disable autostart"
-    echo "  logs [-f]  Show logs"; echo ""
+    echo "  logs [-f]  Show logs"
+    echo ""
 }
 
 case "${1:-}" in
-    start) start ;; stop) stop ;; restart) stop; sleep 1; start ;;
-    status) status ;; enable) enable ;; disable) disable ;;
-    logs) logs "$2" ;; help|--help|-h) help ;;
+    start) start ;;
+    stop) stop ;;
+    restart) stop; sleep 1; start ;;
+    status) status ;;
+    enable) enable ;;
+    disable) disable ;;
+    logs) logs "$2" ;;
+    help|--help|-h) help ;;
     *) err "Unknown: ${1:-}"; help; exit 1 ;;
 esac
 CTL_EOF
