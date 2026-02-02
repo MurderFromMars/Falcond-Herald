@@ -67,9 +67,8 @@ class FalcondHerald:
 
     def _setup_environment(self):
         """Ensure the process has the environment variables needed to talk to the display."""
-        if "DISPLAY" not in os.environ and "WAYLAND_DISPLAY" not in os.environ:
-            os.environ["DISPLAY"] = ":0"
-
+        # FIXED: Only set XDG_RUNTIME_DIR if missing
+        # Do NOT force DISPLAY=:0 on Wayland systems - this breaks Steam and other apps
         if "XDG_RUNTIME_DIR" not in os.environ:
             uid = os.getuid()
             runtime_dir = f"/run/user/{uid}"
