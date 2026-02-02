@@ -235,6 +235,7 @@ running() { local p=$(get_pid); [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
 start() {
     running && { warn "Already running (PID: $(get_pid))"; return 0; }
     msg "Starting..."
+    mkdir -p "$LOG_DIR"
     nohup "$BIN" >> "$LOG" 2>&1 &
     sleep 1
     running && ok "Started (PID: $(get_pid))" || err "Failed"
