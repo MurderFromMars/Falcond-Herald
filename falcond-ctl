@@ -1,0 +1,258 @@
+#!/bin/bash
+#
+# Falcond Herald Management Script
+# Provides systemd-like commands for managing falcond-herald
+#
+
+set -e
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+BIN_FILE="$HOME/.local/bin/falcond-herald"
+AUTOSTART_FILE="$HOME/.config/autostart/falcond-herald.desktop"
+DESKTOP_FILE="$HOME/.local/share/applications/falcond-herald.desktop"
+LOG_DIR="$HOME/.local/share/falcond-herald"
+LOG_FILE="$LOG_DIR/falcond-herald.log"
+PID_FILE="$LOG_DIR/falcond-herald.pid"
+
+print_status() { echo -e "${CYAN}[*]${NC} $1"; }
+print_success() { echo -e "${GREEN}[✓]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[!]${NC} $1"; }
+print_error() { echo -e "${RED}[✗]${NC} $1"; }
+
+get_pid() {
+    if [ -f "$PID_FILE" ]; then
+        cat "$PID_FILE"
+    else
+        pgrep -f "python.*falcond-herald" || echo ""
+    fi
+}
+
+is_running() {
+    local pid=$(get_pid)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+cmd_start() {
+    if is_running; then
+        print_warning "Falcond Herald is already running (PID: $(get_pid))"
+        return 0
+    fi
+
+    print_status "Starting Falcond Herald..."
+    
+    if [ ! -f "$BIN_FILE" ]; then
+        print_error "Falcond Herald not installed at $BIN_FILE"
+        return 1
+    fi
+
+    # Start in background, detached from terminal
+    nohup "$BIN_FILE" >> "$LOG_FILE" 2>&1 &
+    
+    sleep 1
+    
+    if is_running; then
+        print_success "Falcond Herald started (PID: $(get_pid))"
+    else
+        print_error "Failed to start Falcond Herald. Check logs: falcond-ctl logs"
+        return 1
+    fi
+}
+
+cmd_stop() {
+    if ! is_running; then
+        print_warning "Falcond Herald is not running"
+        return 0
+    fi
+
+    local pid=$(get_pid)
+    print_status "Stopping Falcond Herald (PID: $pid)..."
+    
+    kill "$pid" 2>/dev/null || true
+    
+    # Wait up to 5 seconds for graceful shutdown
+    for i in {1..10}; do
+        if ! is_running; then
+            print_success "Falcond Herald stopped"
+            rm -f "$PID_FILE"
+            return 0
+        fi
+        sleep 0.5
+    done
+    
+    # Force kill if still running
+    print_warning "Forcing shutdown..."
+    kill -9 "$pid" 2>/dev/null || true
+    rm -f "$PID_FILE"
+    print_success "Falcond Herald stopped"
+}
+
+cmd_restart() {
+    print_status "Restarting Falcond Herald..."
+    cmd_stop
+    sleep 1
+    cmd_start
+}
+
+cmd_status() {
+    echo ""
+    echo -e "${CYAN}Falcond Herald Status${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    if is_running; then
+        local pid=$(get_pid)
+        echo -e "State:     ${GREEN}● running${NC}"
+        echo -e "PID:       $pid"
+        
+        # Get memory usage
+        local mem=$(ps -p "$pid" -o rss= 2>/dev/null | awk '{printf "%.1f MB", $1/1024}')
+        echo -e "Memory:    $mem"
+        
+        # Check uptime
+        local start_time=$(ps -p "$pid" -o lstart= 2>/dev/null)
+        echo -e "Started:   $start_time"
+    else
+        echo -e "State:     ${RED}○ stopped${NC}"
+    fi
+    
+    echo ""
+    echo "Autostart: $([ -f "$AUTOSTART_FILE" ] && echo -e "${GREEN}enabled${NC}" || echo -e "${RED}disabled${NC}")"
+    echo "Log file:  $LOG_FILE"
+    echo ""
+}
+
+cmd_enable() {
+    if [ -f "$AUTOSTART_FILE" ]; then
+        print_warning "Autostart already enabled"
+        return 0
+    fi
+
+    print_status "Enabling autostart..."
+    
+    mkdir -p "$(dirname "$AUTOSTART_FILE")"
+    
+    cat > "$AUTOSTART_FILE" << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Falcond Herald
+Comment=Power Profile Notification Daemon
+Exec=%h/.local/bin/falcond-herald
+Icon=preferences-system-power
+Terminal=false
+Categories=System;
+X-KDE-autostart-after=panel
+X-GNOME-Autostart-enabled=true
+StartupNotify=false
+Hidden=false
+EOF
+    
+    print_success "Autostart enabled - will run on next login"
+}
+
+cmd_disable() {
+    if [ ! -f "$AUTOSTART_FILE" ]; then
+        print_warning "Autostart already disabled"
+        return 0
+    fi
+
+    print_status "Disabling autostart..."
+    rm -f "$AUTOSTART_FILE"
+    print_success "Autostart disabled"
+}
+
+cmd_logs() {
+    if [ ! -f "$LOG_FILE" ]; then
+        print_warning "No log file found at $LOG_FILE"
+        return 1
+    fi
+
+    if [ "$1" == "-f" ] || [ "$1" == "--follow" ]; then
+        print_status "Following logs (Ctrl+C to exit)..."
+        tail -f "$LOG_FILE"
+    else
+        # Show last 50 lines
+        tail -n 50 "$LOG_FILE"
+    fi
+}
+
+cmd_clear_logs() {
+    if [ -f "$LOG_FILE" ]; then
+        print_status "Clearing log file..."
+        > "$LOG_FILE"
+        print_success "Logs cleared"
+    else
+        print_warning "No log file to clear"
+    fi
+}
+
+show_help() {
+    cat << EOF
+
+${CYAN}Falcond Herald Management Tool${NC}
+
+Usage: falcond-ctl <command> [options]
+
+Commands:
+  start          Start Falcond Herald
+  stop           Stop Falcond Herald
+  restart        Restart Falcond Herald
+  status         Show current status
+  enable         Enable autostart on login
+  disable        Disable autostart
+  logs [-f]      Show logs (-f to follow)
+  clear-logs     Clear log file
+  help           Show this help message
+
+Examples:
+  falcond-ctl start
+  falcond-ctl status
+  falcond-ctl logs -f
+  falcond-ctl enable
+
+EOF
+}
+
+# Main command dispatcher
+case "${1:-}" in
+    start)
+        cmd_start
+        ;;
+    stop)
+        cmd_stop
+        ;;
+    restart)
+        cmd_restart
+        ;;
+    status)
+        cmd_status
+        ;;
+    enable)
+        cmd_enable
+        ;;
+    disable)
+        cmd_disable
+        ;;
+    logs)
+        cmd_logs "$2"
+        ;;
+    clear-logs)
+        cmd_clear_logs
+        ;;
+    help|--help|-h)
+        show_help
+        ;;
+    *)
+        print_error "Unknown command: ${1:-}"
+        show_help
+        exit 1
+        ;;
+esac
