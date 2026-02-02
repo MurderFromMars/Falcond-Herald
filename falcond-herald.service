@@ -1,6 +1,6 @@
 [Unit]
 Description=Falcond Herald - Power Profile Notification Daemon
-Documentation=https://github.com/yourusername/falcond-herald
+Documentation=https://github.com/MurderFromMars/Falcond-Herald
 After=graphical-session.target
 Wants=graphical-session.target
 PartOf=graphical-session.target
@@ -10,7 +10,6 @@ Type=simple
 ExecStart=%h/.local/bin/falcond-herald
 Restart=on-failure
 RestartSec=5
-
 
 [Install]
 WantedBy=default.target
