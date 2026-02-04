@@ -1,13 +1,14 @@
 #!/bin/bash
 #
-# Falcond Herald Self-Contained Installer
-# Desktop Autostart Edition (No systemd pollution!)
+# Falcond Herald Improved Installer
+# With Wayland/Plasma autostart detection and session-aware launcher
 #
 
 set -e
 
 BIN_DIR="$HOME/.local/bin"
 AUTOSTART_DIR="$HOME/.config/autostart"
+AUTOSTART_SCRIPTS_DIR="$HOME/.config/autostart-scripts"
 
 # Colors
 RED='\033[0;31m'
@@ -84,6 +85,14 @@ fi
 
 print_success "All dependencies satisfied"
 
+# Detect session type and desktop environment
+print_status "Detecting desktop environment..."
+SESSION_TYPE="${XDG_SESSION_TYPE:-unknown}"
+DESKTOP="${XDG_CURRENT_DESKTOP:-unknown}"
+
+echo "  Session Type: $SESSION_TYPE"
+echo "  Desktop: $DESKTOP"
+
 # Remove old systemd service if it exists
 if systemctl --user is-enabled falcond-herald.service &>/dev/null; then
     print_warning "Detected old systemd service"
@@ -108,6 +117,8 @@ from pathlib import Path
 from datetime import datetime
 
 try:
+    import gi
+    gi.require_version('Notify', '0.7')
     import dbus
     from dbus.mainloop.glib import DBusGMainLoop
     from gi.repository import GLib, Notify
@@ -212,6 +223,79 @@ HERALD_EOF
 
 chmod +x "$BIN_DIR/falcond-herald"
 
+# Install session-aware launcher for Wayland/Plasma
+print_status "Installing session-aware launcher..."
+cat > "$BIN_DIR/falcond-herald-launcher.sh" << 'LAUNCHER_EOF'
+#!/bin/bash
+# Falcond Herald Session Launcher
+# Waits for Wayland/X session to be fully ready before starting
+
+LOG_FILE="$HOME/.local/share/falcond-herald/autostart.log"
+mkdir -p "$(dirname "$LOG_FILE")"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+log "=== Falcond Herald Autostart Attempt ==="
+
+# Wait for session to be ready
+MAX_WAIT=30
+WAIT_COUNT=0
+
+log "Waiting for session to be ready..."
+
+while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
+    # Check if we have a display
+    if [ -n "$WAYLAND_DISPLAY" ] || [ -n "$DISPLAY" ]; then
+        log "Display available: WAYLAND_DISPLAY=$WAYLAND_DISPLAY DISPLAY=$DISPLAY"
+        
+        # Check if D-Bus session bus is available
+        if [ -n "$DBUS_SESSION_BUS_ADDRESS" ]; then
+            log "D-Bus session available: $DBUS_SESSION_BUS_ADDRESS"
+            
+            # Check if notification daemon is running (important!)
+            if pgrep -x "notification-daemon|dunst|mako|swaync|notify-osd" > /dev/null 2>&1 || \
+               gdbus introspect --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications > /dev/null 2>&1; then
+                log "Notification daemon detected"
+                break
+            else
+                log "No notification daemon yet, waiting..."
+            fi
+        else
+            log "D-Bus session not ready yet..."
+        fi
+    else
+        log "No display yet..."
+    fi
+    
+    sleep 1
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+done
+
+if [ $WAIT_COUNT -ge $MAX_WAIT ]; then
+    log "ERROR: Timeout waiting for session to be ready"
+    exit 1
+fi
+
+log "Session ready after $WAIT_COUNT seconds"
+
+# Additional safety delay
+sleep 2
+
+# Check if already running
+if pgrep -f "python.*falcond-herald" > /dev/null; then
+    log "Herald already running, exiting"
+    exit 0
+fi
+
+# Start the herald
+log "Starting falcond-herald..."
+exec "$HOME/.local/bin/falcond-herald" >> "$LOG_FILE" 2>&1
+LAUNCHER_EOF
+
+chmod +x "$BIN_DIR/falcond-herald-launcher.sh"
+
 # Install management tool (embedded)
 print_status "Installing falcond-ctl..."
 cat > "$BIN_DIR/falcond-ctl" << 'CTL_EOF'
@@ -220,6 +304,7 @@ set -e
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 BIN="$HOME/.local/bin/falcond-herald"
 AUTO="$HOME/.config/autostart/falcond-herald.desktop"
+AUTOSCRIPT="$HOME/.config/autostart-scripts/falcond-herald.sh"
 LOG_DIR="$HOME/.local/share/falcond-herald"
 LOG="$LOG_DIR/falcond-herald.log"
 PID="$LOG_DIR/falcond-herald.pid"
@@ -269,21 +354,30 @@ status() {
         echo -e "State:     ${RED}○ stopped${NC}"
     fi
     echo ""
-    echo "Autostart: $([ -f "$AUTO" ] && echo -e "${GREEN}enabled${NC}" || echo -e "${RED}disabled${NC}")"
+    if [ -f "$AUTO" ]; then
+        echo -e "Autostart: ${GREEN}enabled${NC} (desktop file)"
+    elif [ -f "$AUTOSCRIPT" ]; then
+        echo -e "Autostart: ${GREEN}enabled${NC} (script)"
+    else
+        echo -e "Autostart: ${RED}disabled${NC}"
+    fi
     echo "Log file:  $LOG"
     echo ""
 }
 
 enable() {
-    [ -f "$AUTO" ] && { warn "Already enabled"; return 0; }
-    msg "Enabling..."
+    if [ -f "$AUTO" ] || [ -f "$AUTOSCRIPT" ]; then
+        warn "Already enabled"
+        return 0
+    fi
+    msg "Enabling autostart..."
     mkdir -p "$(dirname "$AUTO")"
     cat > "$AUTO" << 'EOF'
 [Desktop Entry]
 Type=Application
 Name=Falcond Herald
 Comment=Power Profile Notification Daemon
-Exec=%h/.local/bin/falcond-herald
+Exec=%h/.local/bin/falcond-herald-launcher.sh
 Icon=preferences-system-power
 Terminal=false
 Categories=System;
@@ -296,8 +390,8 @@ EOF
 }
 
 disable() {
-    [ ! -f "$AUTO" ] && { warn "Already disabled"; return 0; }
-    rm -f "$AUTO"
+    [ ! -f "$AUTO" ] && [ ! -f "$AUTOSCRIPT" ] && { warn "Already disabled"; return 0; }
+    rm -f "$AUTO" "$AUTOSCRIPT"
     ok "Disabled"
 }
 
@@ -337,14 +431,31 @@ CTL_EOF
 
 chmod +x "$BIN_DIR/falcond-ctl"
 
-# Create autostart entry
-print_status "Creating autostart entry..."
-cat > "$AUTOSTART_DIR/falcond-herald.desktop" << 'EOF'
+# Smart autostart setup based on desktop environment and session type
+print_status "Configuring autostart..."
+
+AUTOSTART_METHOD="desktop-file"
+
+# For KDE Plasma on Wayland, use autostart-scripts
+if [[ "$DESKTOP" == *"KDE"* ]] && [[ "$SESSION_TYPE" == "wayland" ]]; then
+    print_status "Detected KDE Plasma on Wayland - using autostart-scripts method"
+    mkdir -p "$AUTOSTART_SCRIPTS_DIR"
+    cat > "$AUTOSTART_SCRIPTS_DIR/falcond-herald.sh" << 'EOF'
+#!/bin/bash
+~/.local/bin/falcond-herald-launcher.sh &
+EOF
+    chmod +x "$AUTOSTART_SCRIPTS_DIR/falcond-herald.sh"
+    AUTOSTART_METHOD="autostart-script"
+    print_success "Created KDE autostart script"
+else
+    # For other DEs, use standard desktop file with absolute paths
+    print_status "Using standard desktop file autostart"
+    cat > "$AUTOSTART_DIR/falcond-herald.desktop" << EOF
 [Desktop Entry]
 Type=Application
 Name=Falcond Herald
 Comment=Power Profile Notification Daemon
-Exec=%h/.local/bin/falcond-herald
+Exec=$BIN_DIR/falcond-herald-launcher.sh
 Icon=preferences-system-power
 Terminal=false
 Categories=System;
@@ -353,6 +464,9 @@ X-GNOME-Autostart-enabled=true
 StartupNotify=false
 Hidden=false
 EOF
+    chmod +x "$AUTOSTART_DIR/falcond-herald.desktop"
+    print_success "Created desktop file autostart entry"
+fi
 
 print_status "Starting Falcond Herald..."
 "$BIN_DIR/falcond-ctl" start
@@ -369,5 +483,13 @@ echo "  falcond-ctl status     - Status"
 echo "  falcond-ctl logs       - View logs"
 echo "  falcond-ctl logs -f    - Follow logs"
 echo ""
-echo "Autostart: ${GREEN}Enabled${NC}"
+echo "Autostart: ${GREEN}Enabled${NC} (method: $AUTOSTART_METHOD)"
 echo ""
+
+if [[ "$AUTOSTART_METHOD" == "desktop-file" ]] && [[ "$DESKTOP" == *"KDE"* ]]; then
+    echo -e "${YELLOW}Note for KDE Plasma users:${NC}"
+    echo "If autostart doesn't work after reboot, manually add the script via:"
+    echo "System Settings → Startup and Shutdown → Autostart → Add Login Script"
+    echo "Browse to: $BIN_DIR/falcond-herald-launcher.sh"
+    echo ""
+fi
