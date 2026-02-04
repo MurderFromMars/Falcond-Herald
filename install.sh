@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Falcond Herald Improved Installer
-# With Wayland/Plasma autostart detection and session-aware launcher
+#
 #
 
 set -e
